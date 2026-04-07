@@ -4,6 +4,5 @@ langchain
 langchain-community
 langchain-text-splitters
 pdfplumber
-pypdf
-chromadb
+faiss-cpu
 sentence-transformers

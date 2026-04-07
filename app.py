@@ -1,129 +1,113 @@
 import os
 import streamlit as st
-from pathlib import Path
-
 from groq import Groq
-from langchain_community.document_loaders import PDFPlumberLoader, PyPDFLoader
-from langchain_community.vectorstores import Chroma
+import pdfplumber
+from langchain.text_splitter import RecursiveCharacterTextSplitter
+from langchain_community.vectorstores import FAISS
 from langchain_community.embeddings import HuggingFaceEmbeddings
-from langchain_text_splitters import RecursiveCharacterTextSplitter
 
-# -------------------------------
-# PAGE CONFIG
-# -------------------------------
-st.set_page_config(
-    page_title="NDMO Policies Assistant",
-    page_icon="📋",
-    layout="centered"
-)
+# ===========================
+# CONFIG
+# ===========================
+PDF_PATH = "Policies.pdf"
+EMBED_MODEL = "sentence-transformers/all-MiniLM-L6-v2"
+GROQ_MODEL = "llama-3.1-8b-instant"
 
-st.title("📋 NDMO Policies Assistant")
-st.caption("Ask any question about the NDMO Data Management and Personal Data Protection Standards.")
+SYSTEM_PROMPT = """You are an expert assistant for the National Data Management Office (NDMO) policies.
+Answer questions based strictly on the provided policy context.
+If the answer is not in the context, say: "This information is not covered in the NDMO policy document."
+Be concise, clear, and professional."""
 
-# -------------------------------
-# GROQ CLIENT
-# On Streamlit Cloud, secrets are stored in App Settings → Secrets
-# -------------------------------
-client = Groq(api_key=st.secrets["GROQ_API_KEY"])
-MODEL = "llama3-8b-8192"
-
-SYSTEM_PROMPT = """You are a helpful assistant specializing in the NDMO (National Data Management Office)
-Data Management and Personal Data Protection Standards document.
-
-Answer questions clearly and accurately based only on the provided context from the document.
-If the answer is not found in the context, reply: "I don't have enough information in the document to answer that."
-Always be concise and professional."""
-
-# -------------------------------
-# VECTORSTORE — cached so it only builds once per session
-# -------------------------------
-EMBEDDING_MODEL = "sentence-transformers/all-MiniLM-L6-v2"
-CHROMA_DB_DIR = "./chroma_db"
-CHUNK_SIZE = 1200
-CHUNK_OVERLAP = 200
-RETRIEVER_K = 4
-
-@st.cache_resource(show_spinner="📚 Loading document... (first run only, ~1 min)")
+# ===========================
+# LOAD & INDEX PDF (cached)
+# ===========================
+@st.cache_resource(show_spinner="Building policy index... (first load only)")
 def load_vectorstore():
-    pdf_path = Path("Policies.pdf")
-    if not pdf_path.exists():
-        st.error("Policies.pdf not found! Make sure it is in your GitHub repo root.")
-        st.stop()
+    # Extract text from PDF
+    pages = []
+    with pdfplumber.open(PDF_PATH) as pdf:
+        for page in pdf.pages:
+            text = page.extract_text()
+            if text and text.strip():
+                pages.append(text)
 
-    embeddings = HuggingFaceEmbeddings(model_name=EMBEDDING_MODEL)
+    full_text = "\n\n".join(pages)
 
-    if Path(CHROMA_DB_DIR).exists():
-        return Chroma(
-            persist_directory=CHROMA_DB_DIR,
-            embedding_function=embeddings
-        )
+    # Split into chunks
+    splitter = RecursiveCharacterTextSplitter(chunk_size=800, chunk_overlap=100)
+    docs = splitter.create_documents([full_text])
 
-    try:
-        loader = PDFPlumberLoader(str(pdf_path))
-        docs = loader.load()
-    except Exception:
-        loader = PyPDFLoader(str(pdf_path))
-        docs = loader.load()
-
-    for d in docs:
-        d.metadata["source"] = pdf_path.name
-        d.page_content = " ".join(d.page_content.split())
-
-    splitter = RecursiveCharacterTextSplitter(
-        chunk_size=CHUNK_SIZE,
-        chunk_overlap=CHUNK_OVERLAP
-    )
-    docs_split = splitter.split_documents(docs)
-
-    vectorstore = Chroma.from_documents(
-        docs_split,
-        embeddings,
-        persist_directory=CHROMA_DB_DIR
-    )
-    vectorstore.persist()
+    # Build FAISS vector store
+    embeddings = HuggingFaceEmbeddings(model_name=EMBED_MODEL)
+    vectorstore = FAISS.from_documents(docs, embeddings)
     return vectorstore
 
+# ===========================
+# RETRIEVE RELEVANT CHUNKS
+# ===========================
+def get_context(query, vectorstore, k=4):
+    results = vectorstore.similarity_search(query, k=k)
+    return "\n\n---\n\n".join([r.page_content for r in results])
+
+# ===========================
+# GROQ CHAT
+# ===========================
+def ask_groq(user_message, context, history):
+    client = Groq(api_key=os.environ["GROQ_API_KEY"])
+
+    messages = [{"role": "system", "content": SYSTEM_PROMPT}]
+
+    # Add chat history (last 6 turns to stay within token limits)
+    for turn in history[-6:]:
+        messages.append({"role": "user", "content": turn["user"]})
+        messages.append({"role": "assistant", "content": turn["assistant"]})
+
+    # Add context + current question
+    messages.append({
+        "role": "user",
+        "content": f"Context from NDMO policy document:\n{context}\n\nQuestion: {user_message}"
+    })
+
+    response = client.chat.completions.create(
+        model=GROQ_MODEL,
+        messages=messages,
+        max_tokens=1024,
+        temperature=0.2,
+    )
+    return response.choices[0].message.content
+
+# ===========================
+# STREAMLIT UI
+# ===========================
+st.set_page_config(page_title="NDMO Policy Chatbot", page_icon="📋", layout="centered")
+st.title("📋 NDMO Policy Assistant")
+st.caption("Ask anything about the National Data Management Office policies.")
+
+# Load vector store
 vectorstore = load_vectorstore()
-retriever = vectorstore.as_retriever(search_kwargs={"k": RETRIEVER_K})
 
-# -------------------------------
-# CHAT HISTORY
-# -------------------------------
-if "messages" not in st.session_state:
-    st.session_state.messages = []
+# Session state for chat history
+if "history" not in st.session_state:
+    st.session_state.history = []
 
-for msg in st.session_state.messages:
-    with st.chat_message(msg["role"]):
-        st.markdown(msg["content"])
-
-# -------------------------------
-# CHAT INPUT
-# -------------------------------
-if prompt := st.chat_input("Ask about NDMO policies..."):
-
-    st.session_state.messages.append({"role": "user", "content": prompt})
+# Display chat history
+for turn in st.session_state.history:
     with st.chat_message("user"):
-        st.markdown(prompt)
+        st.write(turn["user"])
+    with st.chat_message("assistant"):
+        st.write(turn["assistant"])
 
-    docs = retriever.invoke(prompt)
-    context = "\n\n".join([d.page_content for d in docs])
+# Chat input
+user_input = st.chat_input("Ask about NDMO policies...")
+
+if user_input:
+    with st.chat_message("user"):
+        st.write(user_input)
 
     with st.chat_message("assistant"):
-        with st.spinner("Thinking..."):
-            response = client.chat.completions.create(
-                model=MODEL,
-                messages=[
-                    {"role": "system", "content": SYSTEM_PROMPT},
-                    {
-                        "role": "user",
-                        "content": f"Context from document:\n{context}\n\nQuestion: {prompt}"
-                    }
-                ],
-                max_tokens=1000,
-                temperature=0.2,
-            )
-            answer = response.choices[0].message.content.strip()
-            answer += "\n\n📄 *Source: Policies.pdf*"
-            st.markdown(answer)
+        with st.spinner("Searching policies..."):
+            context = get_context(user_input, vectorstore)
+            answer = ask_groq(user_input, context, st.session_state.history)
+        st.write(answer)
 
-    st.session_state.messages.append({"role": "assistant", "content": answer})
+    st.session_state.history.append({"user": user_input, "assistant": answer})
