@@ -1,0 +1,9 @@
+streamlit
+groq
+langchain
+langchain-community
+langchain-text-splitters
+pdfplumber
+pypdf
+chromadb
+sentence-transformers
