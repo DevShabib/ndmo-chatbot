@@ -54,7 +54,6 @@ with st.sidebar:
     st.divider()
     
     # ---- File Download ----
-    # Read directory and filter out the internal JSON database file
     all_files = sorted(os.listdir(TRANSFER_DIR))
     downloadable_files = [f for f in all_files if f != TEXT_DB_FILE]
     
@@ -62,7 +61,6 @@ with st.sidebar:
         st.caption("Available to download:")
         for name in downloadable_files:
             file_path = os.path.join(TRANSFER_DIR, name)
-            # Ensure it is a file and not a subdirectory
             if os.path.isfile(file_path):
                 with open(file_path, "rb") as f:
                     st.download_button(
@@ -78,24 +76,28 @@ with st.sidebar:
 # MAIN APP BODY: PUBLIC TEXT BOARD
 # ==========================================
 st.header("📝 Shared Text Board")
-st.write("Anything you paste here is immediately visible to all other web app users.")
+st.caption("💡 Press **Ctrl + Enter** (or Cmd + Enter) inside the box to post instantly!")
 
-# Submit Form (Handles real-time posting clean-up seamlessly)
-with st.form("text_sharing_form", clear_on_submit=True):
-    pasted = st.text_area(
-        label="Paste your formatted text here:", 
-        placeholder="Type or paste something... formatting, line breaks, and spaces will be preserved.",
-        height=200
-    )
-    submit_button = st.form_submit_button("Share with Everyone")
-    
-    if submit_button:
-        if pasted.strip():
-            save_shared_text(pasted)
-            st.success("Successfully posted to the board!")
-            st.rerun()
-        else:
-            st.warning("Cannot share an empty text block.")
+# Initializing session key to reset input area on submit
+if "text_input" not in st.session_state:
+    st.session_state.text_input = ""
+
+# Input field directly responds to keyboard submission shortcut
+pasted = st.text_area(
+    label="Paste text here:", 
+    value=st.session_state.text_input,
+    placeholder="Type or paste something... formatting will be preserved.",
+    height=150,
+    key="input_box"
+)
+
+# Broadcast button acts as a fallback or visual click indicator
+if st.button("Share with Everyone") or (pasted and pasted != st.session_state.text_input):
+    if pasted.strip():
+        save_shared_text(pasted)
+        st.success("Successfully posted to the board!")
+        st.session_state.text_input = "" # Resets field data
+        st.rerun()
 
 st.divider()
 
@@ -104,19 +106,38 @@ st.subheader("📋 Live Board Feed")
 shared_snippets = load_shared_texts()
 
 if shared_snippets:
-    # Display starting from the most recently added items
     for index, text_content in enumerate(reversed(shared_snippets)):
         with st.container(border=True):
-            # st.text preserves literal spaces, indents, and line breaks perfectly
             st.text(text_content)
             
-            # Allow users to export this specific block as a text file download
-            st.download_button(
-                label="⬇️ Download Snippet (.txt)",
-                data=text_content,
-                file_name=f"shared_text_{index + 1}.txt",
-                mime="text/plain",
-                key=f"text_dl_{index}"
-            )
+            # Formatted Columns for Download and Copy utilities 
+            col1, col2 = st.columns([1, 4])
+            
+            with col1:
+                st.download_button(
+                    label="⬇️ Download",
+                    data=text_content,
+                    file_name=f"shared_text_{index + 1}.txt",
+                    mime="text/plain",
+                    key=f"text_dl_{index}"
+                )
+            
+            with col2:
+                # Direct HTML injection creating a functional browser clipboard utility
+                escaped_text = json.dumps(text_content) # Escapes quotes / newlines safely for Javascript
+                button_html = f"""
+                <button onclick='navigator.clipboard.writeText({escaped_text}); this.innerText="📋 Copied!"; setTimeout(() => this.innerText="📋 Copy", 2000);' 
+                style='
+                    background-color: transparent; 
+                    color: rgb(250, 250, 250); 
+                    border: 1px solid rgba(250, 250, 250, 0.2); 
+                    padding: 0.4rem 0.75rem; 
+                    border-radius: 0.5rem; 
+                    cursor: pointer; 
+                    font-size: 14px;
+                    line-height: 1.6;
+                '>📋 Copy</button>
+                """
+                st.components.v1.html(button_html, height=45)
 else:
     st.info("The board is currently empty. Be the first to post something!")
