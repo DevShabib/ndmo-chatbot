@@ -5,22 +5,18 @@ import pdfplumber
 from langchain_text_splitters import RecursiveCharacterTextSplitter
 from langchain_community.vectorstores import FAISS
 from langchain_community.embeddings import HuggingFaceEmbeddings
-import os
-# (your other imports already there)
 
 TRANSFER_DIR = "/tmp/transfers"
 os.makedirs(TRANSFER_DIR, exist_ok=True)
 
 with st.sidebar:
     st.header("📁 File transfer")
-
     # ---- Upload ----
     up = st.file_uploader("Upload a file")
     if up is not None:
         dest = os.path.join(TRANSFER_DIR, up.name)
         data = up.getbuffer()
         total = len(data)
-
         progress = st.progress(0, text="Starting upload...")
         chunk = 1024 * 256  # 256 KB per write
         written = 0
@@ -32,9 +28,7 @@ with st.sidebar:
                 progress.progress(pct, text=f"Saving... {pct}%")
         progress.progress(100, text="Done ✅")
         st.success(f"Saved {up.name} ({total / 1024 / 1024:.1f} MB)")
-
     st.divider()
-
     # ---- Download ----
     files = sorted(os.listdir(TRANSFER_DIR))
     if files:
@@ -44,3 +38,21 @@ with st.sidebar:
                 st.download_button(f"⬇️ {name}", f.read(), file_name=name, key=name)
     else:
         st.caption("No files yet.")
+
+# ===========================
+# PASTE TEXT (main body, centered column)
+# ===========================
+st.header("📝 Paste text")
+pasted = st.text_area("Paste here — formatting (line breaks, spacing) is kept", height=300)
+if pasted:
+    st.caption("Preview (format preserved):")
+    st.text(pasted)  # verbatim, no markdown reflow
+    st.download_button(
+        "⬇️ Download as .txt",
+        pasted,
+        file_name="pasted.txt",
+        mime="text/plain",
+        key="paste_dl",
+    )
+
+st.divider()
